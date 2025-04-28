@@ -6,7 +6,7 @@ Here is the purpose of each file present in this repo:
 
 ├── app.py         # A sample "Hello World" flask application
 ├── ci-cd-codepipeline.cfn.yml # Cloudformation template to create the Codebuild, and Codepipeline, and related resources. 
-├── buildspec.yml  # Codebuild will execute the commands available here. 
+├── buildspec.yml  # Codebuild will execute the commands available here.  addd here
 ├── Dockerfile     # Codebuild will build an image using the Dockerfile, and push it to the Dockerhub/or AWS ECR. 
 ├── deployment.yml # The deployment file for the Kubernetes cluster. Codebuild will apply this deployment using the one of the kubectl commands.   
 ├── iam-role-policy.json # The Policy for the IAM role that the Codebuild will assume
