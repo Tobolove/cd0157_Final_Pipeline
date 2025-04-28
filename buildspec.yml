@@ -1,51 +1,103 @@
 ---
 version: 0.2
 
-
 phases:
   install:
     runtime-versions:
-      python: 3.7
+      python: 3.9 # Empfohlene Aktualisierung
     commands:
-      - echo 'about to call dockerd'
-      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2&
+      - echo 'Starting Docker daemon...'
+      # Run dockerd in background
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2 &
+      # Wait for dockerd to start
       - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
-      - curl -sS -o aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-07-26/bin/linux/amd64/aws-iam-authenticator
-      # You must use a kubectl version that is within one minor version difference of your Amazon EKS cluster control plane. 
-      # For example, a 1.21 kubectl client works with Kubernetes 1.20, 1.21 and 1.22 clusters.
-      # Ref: https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html OR https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
-      # To download a specific version v1.22.0 on Linux, use:
-      - curl -LO https://dl.k8s.io/release/v1.23.6/bin/linux/amd64/kubectl
-      # Download the kubectl checksum file
-      - curl -LO "https://dl.k8s.io/v1.23.6/bin/linux/amd64/kubectl.sha256"
-      # Validate the kubectl binary against the checksum file
+      - echo 'Docker daemon started.'
+
+      # Download compatible kubectl for EKS 1.32
+      - echo 'Downloading kubectl v1.32.0...'
+      - curl -LO https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl
+      # Download checksum
+      - curl -LO "https://dl.k8s.io/v1.32.0/bin/linux/amd64/kubectl.sha256"
+      # Validate checksum
       - echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
       # Install kubectl
-      - chmod +x ./kubectl ./aws-iam-authenticator      
-      - export PATH=$PWD/:$PATH  
+      - chmod +x ./kubectl
+      - mv ./kubectl /usr/local/bin/kubectl # Move to a standard bin path
+      - export PATH=$PATH:/usr/local/bin # Ensure kubectl is in PATH
+
+      # Note: aws-iam-authenticator is generally not needed with modern kubectl/aws cli and update-kubeconfig
+      # - curl -sS -o aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-07-26/bin/linux/amd64/aws-iam-authenticator
+      # - chmod +x ./aws-iam-authenticator
+      # - mv ./aws-iam-authenticator /usr/local/bin/aws-iam-authenticator
+
+      - echo 'Checking versions...'
       - python --version
-      - echo 'export PATH=$PWD/:$PATH' >> $HOME/.bashrc
-      - echo `kubectl version --short --client`
-      - python -m pip install --upgrade --force pip
-      - apt-get update && apt-get -y install jq  && pip install --upgrade awscli
+      - kubectl version --short --client
+      - aws --version
+
+      # Upgrade pip and awscli, install jq
+      - echo 'Updating packages...'
+      - python -m pip install --upgrade --force-reinstall pip # Use reinstall for robustness
+      - apt-get update
+      - apt-get install -y jq # Install jq separately first
+      - pip install --upgrade awscli # Upgrade awscli via pip
+      - echo 'Package updates complete.'
+
   pre_build:
-      commands:
-        - TAG="$REPOSITORY_NAME.$REPOSITORY_BRANCH.$ENVIRONMENT_NAME.$(date +%Y-%m-%d.%H.%M.%S).$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
-        - sed -i 's@CONTAINER_IMAGE@'"$REPOSITORY_URI:$TAG"'@' deployment.yml
-        - $(aws ecr get-login --no-include-email)
-        - export KUBECONFIG=$HOME/.kube/config
-        - echo `ls -l`
+    commands:
+      - echo 'Setting up build environment variables...'
+      # Define TAG using CodeBuild environment variables if available, otherwise default
+      - DEFAULT_ENVIRONMENT_NAME="prod"
+      - ENVIRONMENT_NAME=${ENVIRONMENT_NAME:-$DEFAULT_ENVIRONMENT_NAME} # Use default if env var not set by pipeline
+      - TAG="$REPOSITORY_NAME.$REPOSITORY_BRANCH.$ENVIRONMENT_NAME.$(date +%Y-%m-%d.%H.%M.%S).$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
+      - echo "Image tag set to: $TAG"
+
+      # Update deployment manifest placeholder
+      - echo 'Updating deployment.yml with image tag...'
+      - sed -i 's@CONTAINER_IMAGE@'"$REPOSITORY_URI:$TAG"'@' deployment.yml # Ensure deployment.yml exists
+
+      # Login to AWS ECR (modern method)
+      - echo 'Logging in to Amazon ECR...'
+      # Extract registry URL component if needed, or use default env vars
+      # Assumes AWS_REGION and AWS_ACCOUNT_ID are available in CodeBuild env
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      - echo 'ECR login successful.'
+
+      # Prepare kubeconfig directory
+      - export KUBECONFIG=$HOME/.kube/config
+      - mkdir -p $HOME/.kube
+
+      - echo 'pre_build phase complete.'
+      - echo `ls -l`
+
   build:
     commands:
+      - echo "Starting Docker build for $REPOSITORY_URI:$TAG..."
       - docker build --tag $REPOSITORY_URI:$TAG .
+      - echo 'Docker build complete.'
 
   post_build:
     commands:
+      - echo 'Starting Docker push...'
       - docker push $REPOSITORY_URI:$TAG
-      - echo $EKS_CLUSTER_NAME
-      - echo $EKS_KUBECTL_ROLE_ARN
-      - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --role-arn $EKS_KUBECTL_ROLE_ARN
-      - kubectl apply -f deployment.yml 
-      - printf '[{"name":"eksctl-demo","imageUri":"%s"}]' $REPOSITORY_URI:$TAG > build.json
+      - echo 'Docker push complete.'
+
+      # Configure kubectl
+      - echo "Configuring kubectl for cluster: $EKS_CLUSTER_NAME in region $AWS_REGION"
+      - echo "Using role ARN: $EKS_KUBECTL_ROLE_ARN"
+      - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION --role-arn $EKS_KUBECTL_ROLE_ARN
+      - echo 'kubectl configuration updated.'
+
+      # Deploy to Kubernetes
+      - echo 'Applying deployment.yml to Kubernetes cluster...'
+      - kubectl apply -f deployment.yml
+      - echo 'Deployment applied.'
+
+      # Create artifact file for CodePipeline (if needed)
+      - echo 'Creating build artifact...'
+      - printf '[{"name":"%s","imageUri":"%s"}]' $EKS_CLUSTER_NAME $REPOSITORY_URI:$TAG > build.json
+      - echo 'post_build phase complete.'
+
 artifacts:
-  files: build.json
+  files:
+    - build.json
