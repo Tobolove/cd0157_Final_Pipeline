@@ -4,7 +4,7 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.9 # Empfohlene Aktualisierung
+      python: 3.9 
     commands:
       - echo 'Starting Docker daemon...'
       # Run dockerd in background
@@ -43,32 +43,13 @@ phases:
       - pip install --upgrade awscli # Upgrade awscli via pip
       - echo 'Package updates complete.'
 
-  pre_build:
-    commands:
-      - echo 'Setting up build environment variables...'
-      # Define TAG using CodeBuild environment variables if available, otherwise default
-      - DEFAULT_ENVIRONMENT_NAME="prod"
-      - ENVIRONMENT_NAME=${ENVIRONMENT_NAME:-$DEFAULT_ENVIRONMENT_NAME} # Use default if env var not set by pipeline
-      - TAG="$REPOSITORY_NAME.$REPOSITORY_BRANCH.$ENVIRONMENT_NAME.$(date +%Y-%m-%d.%H.%M.%S).$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
-      - echo "Image tag set to: $TAG"
-
-      # Update deployment manifest placeholder
-      - echo 'Updating deployment.yml with image tag...'
-      - sed -i 's@CONTAINER_IMAGE@'"$REPOSITORY_URI:$TAG"'@' deployment.yml # Ensure deployment.yml exists
-
-      # Login to AWS ECR (modern method)
-      - echo 'Logging in to Amazon ECR...'
-      # Extract registry URL component if needed, or use default env vars
-      # Assumes AWS_REGION and AWS_ACCOUNT_ID are available in CodeBuild env
-      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-      - echo 'ECR login successful.'
-
-      # Prepare kubeconfig directory
-      - export KUBECONFIG=$HOME/.kube/config
-      - mkdir -p $HOME/.kube
-
-      - echo 'pre_build phase complete.'
-      - echo `ls -l`
+   pre_build:
+      commands:
+        - TAG="$REPOSITORY_NAME.$REPOSITORY_BRANCH.$ENVIRONMENT_NAME.$(date +%Y-%m-%d.%H.%M.%S).$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
+        - sed -i 's@CONTAINER_IMAGE@'"$REPOSITORY_URI:$TAG"'@' deployment.yml
+        - $(aws ecr get-login --no-include-email)
+        - export KUBECONFIG=$HOME/.kube/config
+        - echo `ls -l`
 
   build:
     commands:
